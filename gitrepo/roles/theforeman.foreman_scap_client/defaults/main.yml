@@ -1,0 +1,20 @@
+---
+foreman_scap_client_state: present
+foreman_scap_client_server: ''
+foreman_scap_client_port: 9090
+foreman_scap_client_policies: []
+foreman_scap_client_ca_cert_path: ''
+foreman_scap_client_host_cert_path: ''
+foreman_scap_client_host_private_key_path: ''
+foreman_scap_client_release: latest
+foreman_scap_client_repo_url: 'https://yum.theforeman.org/client/{{ foreman_scap_client_release }}/el7/x86_64'
+foreman_scap_client_repo_state: absent
+foreman_scap_client_repo_key: 'https://yum.theforeman.org/RPM-GPG-KEY-foreman'
+foreman_scap_client_repo_gpg: false
+foreman_scap_client_cron_template: 'templates/cron.j2'
+foreman_scap_client_cron_splay_seed: ''
+foreman_scap_client_cron_splay: 600
+foreman_scap_client_fetch_remote_resources: false
+foreman_scap_client_http_proxy_server: ''
+foreman_scap_client_http_proxy_port: ''
+foreman_scap_client_timeout: 60

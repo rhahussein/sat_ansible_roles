@@ -1,0 +1,132 @@
+---
+- name: Preflight checks
+  block:
+    - name: Can connect to the Satellite with the given username/password
+      uri:
+        url: "{{ satellite_url }}/api/status"
+        user: "{{ satellite_user }}"
+        force_basic_auth: true
+        validate_certs: "{{ satellite_validate_certs }}"
+        password: "{{ satellite_password }}"
+    - name: Can connect to cloud.redhat.com
+      uri:
+        url: "https://{{ c_rh_c_host }}/api"
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ http_proxy }}"
+    - name: Receptor configuration directory exists
+      file:
+        path: "{{ receptor_config_dir }}"
+        state: directory
+    - name: Receptor data directory exists
+      file:
+        path: "{{ receptor_data_dir }}"
+        state: directory
+    - name: Install role dependencies
+      yum:
+        name: python2-jmespath
+        state: installed
+- name: Determine which command to use for locking packages
+  include_tasks: determine_maintain_command.yml
+  loop:
+    - satellite-maintain
+    - foreman-maintain
+- name: Install Receptor and Satellite Plugin RPMs
+  block:
+  - name: Unlock packages
+    command: "{{ maintain_command }} packages unlock"
+    when: maintain_command is defined
+  - name: Install Receptor and Satellite Plugin RPMs
+    yum:
+      name: "{{ receptor_packages }}"
+      state: installed
+    become: yes
+  - name: Lock packages
+    command: "{{ maintain_command }} packages lock"
+    when: maintain_command is defined
+  when: install_receptor_from_rpm|bool
+- name: Retrieve organization details
+  block:
+    - name: Create a temporary file
+      tempfile:
+        state: file
+      register: tempfile
+    - name: Set correct permissions and ownership for temporary file
+      file:
+        path: "{{ tempfile.path }}"
+        mode: 0600
+        owner: foreman
+        group: foreman
+    - name: Dump organization details
+      command: foreman-rake katello:receptor:extract_orgs OUTPUT_FILE={{ tempfile.path }}
+    - name: Retrieve dumped organization details
+      slurp:
+        src: "{{ tempfile.path }}"
+      register: org_details
+    - name: Remove dumped organization details
+      file:
+        path: "{{ tempfile.path }}"
+        state: absent
+  tags: query_satellite
+- name: Extract account information from Satellite and write configs
+  include_tasks: extract_orgs.yml
+  loop: "{{ org_details['content'] | b64decode }}"
+  when: organization.id not in skip_satellite_org_id_list
+  loop_control:
+    loop_var: organization
+  tags: query_satellite
+- name: Register Satellite and Receptor with Sources
+  block:
+  - name: Gather installed account dirs
+    find:
+      file_type: directory
+      paths: "{{ receptor_config_dir }}"
+      patterns: "rh_*"
+    register: account_dirs_full_path
+  - name: Extract account dirs
+    set_fact:
+      account_dirs: "{{ account_dirs_full_path | json_query('files[*].path') | map('basename') | list }}"
+  - name: Identify Satellite ID from Satellite
+    uri:
+      url: "{{ satellite_url }}/api/settings?search=name%20%3D%20instance_id"
+      user: "{{ satellite_user }}"
+      password: "{{ satellite_password }}"
+      return_content: yes
+      validate_certs: "{{ satellite_validate_certs }}"
+      force_basic_auth: yes
+    register: satellite_uuid_json
+  - name: Extract Satellite ID from result
+    set_fact:
+      satellite_uuid: "{{ satellite_uuid_json | json_query('json.results[0].value') }}"
+  - name: Set up Source with c.rh.c for each account
+    include_tasks: register_with_sources.yml
+    loop: "{{ account_dirs }}"
+    loop_control:
+      loop_var: account_dir
+  tags: register_with_sources
+- name: Create Receptor systemd unit files per account and start them
+  block:
+  - name: Genereate environment files
+    copy:
+      dest: "{{ receptor_config_dir }}/{{ account_dir }}/receptor.env"
+      content: |
+        HTTP_PROXY={{ http_proxy }}
+        HTTPS_PROXY={{ http_proxy }}
+    loop: "{{ account_dirs }}"
+    loop_control:
+      loop_var: account_dir
+  - name: Generate template unit file
+    template:
+      src: receptor@.service.j2
+      dest: /etc/systemd/system/receptor@.service
+  - name: Reload systemd units
+    systemd:
+      daemon_reload: yes
+  - name: Enable Receptor systemd units
+    systemd:
+      unit: "receptor@{{ item }}.service"
+      enabled: yes
+      state: started
+    loop: "{{ account_dirs }}"
+  tags: install_into_systemd
+  become: yes
